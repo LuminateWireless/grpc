@@ -54,7 +54,11 @@
 #include <grpc/support/useful.h>
 
 #include <openssl/bio.h>
+#if defined(OPENSSL_IS_BORINGSSL)
+#include <openssl/mem.h> /* For OPENSSL_free */
+#else
 #include <openssl/crypto.h> /* For OPENSSL_free */
+#endif
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
