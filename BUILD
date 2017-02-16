@@ -116,6 +116,11 @@ grpc_cc_library(
 
 grpc_cc_library(
     name = "grpc++",
+    defines = select({
+        "//tools/cpp:x86_32": ["NO_GRPC_BINARYLOG",],
+        "//tools/cpp:arm": ["NO_GRPC_BINARYLOG",],
+        "//conditions:default": [],
+     }),
     srcs = [
         "src/cpp/client/insecure_credentials.cc",
         "src/cpp/client/secure_credentials.cc",
@@ -141,7 +146,12 @@ grpc_cc_library(
         "grpc++_codegen_base",
         "grpc++_codegen_base_src",
         "grpc++_codegen_proto",
-    ],
+    ] + 
+    select ({
+        "//tools/cpp:x86_32": [],
+        "//tools/cpp:arm": [],
+        "//conditions:default": ["//logs:grpc-log",],
+    }),
 )
 
 grpc_cc_library(

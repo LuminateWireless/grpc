@@ -39,6 +39,11 @@
 #include <map>
 #include <memory>
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/grpc-log.h"
+#include "logs/log_message.pb.h"
+#endif
+
 #include <grpc++/impl/codegen/call_hook.h>
 #include <grpc++/impl/codegen/client_context.h>
 #include <grpc++/impl/codegen/completion_queue_tag.h>
@@ -229,6 +234,17 @@ class CallOpSendMessage {
   template <class M>
   Status SendMessage(const M& message) GRPC_MUST_USE_RESULT;
 
+#ifndef NO_GRPC_BINARYLOG
+  // Add two new SendMessage functions.
+  template <class M>
+  Status SendMessage(const M& message, const WriteOptions& options,
+                     logs::GrpcMessage* log_message) GRPC_MUST_USE_RESULT;
+
+  template <class M>
+  Status SendMessage(const M& message,
+                     logs::GrpcMessage* log_message) GRPC_MUST_USE_RESULT;
+#endif
+
  protected:
   void AddOp(grpc_op* ops, size_t* nops) {
     if (send_buf_ == nullptr) return;
@@ -263,6 +279,26 @@ Status CallOpSendMessage::SendMessage(const M& message) {
   return SendMessage(message, WriteOptions());
 }
 
+#ifndef NO_GRPC_BINARYLOG
+template <class M>
+Status CallOpSendMessage::SendMessage(const M& message,
+                                      const WriteOptions& options,
+                                      logs::GrpcMessage* log_message) {
+  std::unique_ptr<logs::GrpcMessage> grpc_message(log_message);
+  write_options_ = options;
+  Status status =
+      SerializationTraits<M>::Serialize(message, &send_buf_, &own_buf_);
+  logs::GrpcLog::Log(grpc_message.get(), send_buf_);
+  return status;
+}
+
+template <class M>
+Status CallOpSendMessage::SendMessage(const M& message,
+                                      logs::GrpcMessage* log_message) {
+  return SendMessage(message, WriteOptions(), log_message);
+}
+#endif
+
 template <class R>
 class CallOpRecvMessage {
  public:
@@ -272,6 +308,14 @@ class CallOpRecvMessage {
         allow_not_getting_message_(false) {}
 
   void RecvMessage(R* message) { message_ = message; }
+
+#ifndef NO_GRPC_BINARYLOG
+  // Add a new RecvMessage function.
+  void RecvMessage(R* message, logs::GrpcMessage* log_message) {
+    message_ = message;
+    grpc_message_.reset(log_message);
+  }
+#endif
 
   // Do not change status if no message is received.
   void AllowNoMessage() { allow_not_getting_message_ = true; }
@@ -294,6 +338,11 @@ class CallOpRecvMessage {
       if (*status) {
         got_message = *status =
             SerializationTraits<R>::Deserialize(recv_buf_, message_).ok();
+#ifndef NO_GRPC_BINARYLOG
+        logs::GrpcLog::Log(grpc_message_.get(), recv_buf_);
+#endif
+        *status = SerializationTraits<R>::Deserialize(recv_buf_, message_,
+                                                      max_message_size).ok();
       } else {
         got_message = false;
         g_core_codegen_interface->grpc_byte_buffer_destroy(recv_buf_);
@@ -311,6 +360,9 @@ class CallOpRecvMessage {
   R* message_;
   grpc_byte_buffer* recv_buf_;
   bool allow_not_getting_message_;
+#ifndef NO_GRPC_BINARYLOG
+  std::unique_ptr<logs::GrpcMessage> grpc_message_;
+#endif
 };
 
 namespace CallOpGenericRecvMessageHelper {
@@ -349,6 +401,16 @@ class CallOpGenericRecvMessage {
     deserialize_.reset(func);
   }
 
+#ifndef NO_GRPC_BINARYLOG
+  // Add a new RecvMessage function.
+  template <class R>
+  void RecvMessage(R* message, logs::GrpcMessage* log_message) {
+    deserialize_.reset(
+        new CallOpGenericRecvMessageHelper::DeserializeFuncType<R>(message));
+    grpc_message_.reset(log_message);
+  }
+#endif
+
   // Do not change status if no message is received.
   void AllowNoMessage() { allow_not_getting_message_ = true; }
 
@@ -370,6 +432,9 @@ class CallOpGenericRecvMessage {
       if (*status) {
         got_message = true;
         *status = deserialize_->Deserialize(recv_buf_).ok();
+#ifndef NO_GRPC_BINARYLOG
+        logs::GrpcLog::Log(grpc_message_.get(), recv_buf_);
+#endif
       } else {
         got_message = false;
         g_core_codegen_interface->grpc_byte_buffer_destroy(recv_buf_);
@@ -387,6 +452,9 @@ class CallOpGenericRecvMessage {
   std::unique_ptr<CallOpGenericRecvMessageHelper::DeserializeFunc> deserialize_;
   grpc_byte_buffer* recv_buf_;
   bool allow_not_getting_message_;
+#ifndef NO_GRPC_BINARYLOG
+  std::unique_ptr<logs::GrpcMessage> grpc_message_;
+#endif
 };
 
 class CallOpClientSendClose {
@@ -422,6 +490,17 @@ class CallOpServerSendStatus {
     send_status_code_ = static_cast<grpc_status_code>(GetCanonicalCode(status));
     send_status_details_ = status.error_message();
   }
+
+#ifndef NO_GRPC_BINARYLOG
+  // Add a new ServerSendStatus function.
+  void ServerSendStatus(
+      const std::multimap<grpc::string, grpc::string>& trailing_metadata,
+      const Status& status, logs::GrpcMessage* log_message) {
+    ServerSendStatus(trailing_metadata, status);
+    std::unique_ptr<logs::GrpcMessage> grpc_message(log_message);
+    logs::GrpcLog::Log(grpc_message.get(), status.error_code(), status.error_message());
+  }
+#endif
 
  protected:
   void AddOp(grpc_op* ops, size_t* nops) {
@@ -492,6 +571,15 @@ class CallOpClientRecvStatus {
     recv_status_ = status;
   }
 
+#ifndef NO_GRPC_BINARYLOG
+  // Add a new ClientRecvStatus function.
+  void ClientRecvStatus(ClientContext* context, Status* status,
+                        logs::GrpcMessage* log_message) {
+    grpc_message_.reset(log_message);
+    ClientRecvStatus(context, status);
+  }
+#endif
+
  protected:
   void AddOp(grpc_op* ops, size_t* nops) {
     if (recv_status_ == nullptr) return;
@@ -511,6 +599,10 @@ class CallOpClientRecvStatus {
                            grpc::string(GRPC_SLICE_START_PTR(status_details_),
                                         GRPC_SLICE_END_PTR(status_details_)));
     g_core_codegen_interface->grpc_slice_unref(status_details_);
+#ifndef NO_GRPC_BINARYLOG
+    logs::GrpcLog::Log(grpc_message_.get(), recv_status_->error_code(),
+                       recv_status_->error_message());
+#endif
     recv_status_ = nullptr;
   }
 
@@ -519,6 +611,9 @@ class CallOpClientRecvStatus {
   Status* recv_status_;
   grpc_status_code status_code_;
   grpc_slice status_details_;
+#ifndef NO_GRPC_BINARYLOG
+  std::unique_ptr<logs::GrpcMessage> grpc_message_;
+#endif
 };
 
 /// An abstract collection of CallOpSet's, to be used whenever

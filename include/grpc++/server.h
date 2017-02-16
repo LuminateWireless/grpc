@@ -99,6 +99,10 @@ class Server final : public ServerInterface, private GrpcLibraryCodegen {
   // Returns a \em raw pointer to the underlying grpc_server instance.
   grpc_server* c_server();
 
+  const grpc::string server_addr() GRPC_OVERRIDE {
+    return server_addr_;
+  }
+
  private:
   friend class AsyncGenericService;
   friend class ServerBuilder;
@@ -216,6 +220,8 @@ class Server final : public ServerInterface, private GrpcLibraryCodegen {
   grpc_server* server_;
 
   std::unique_ptr<ServerInitializer> server_initializer_;
+
+  grpc::string server_addr_;
 };
 
 }  // namespace grpc

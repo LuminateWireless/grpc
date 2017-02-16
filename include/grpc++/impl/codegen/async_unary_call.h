@@ -34,6 +34,10 @@
 #ifndef GRPCXX_IMPL_CODEGEN_ASYNC_UNARY_CALL_H
 #define GRPCXX_IMPL_CODEGEN_ASYNC_UNARY_CALL_H
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/grpc-log.h"
+#endif
+
 #include <grpc++/impl/codegen/call.h>
 #include <grpc++/impl/codegen/channel_interface.h>
 #include <grpc++/impl/codegen/client_context.h>
@@ -65,11 +69,24 @@ class ClientAsyncResponseReader final
       : context_(context),
         call_(channel->CreateCall(method, context, cq)),
         collection_(std::make_shared<CallOpSetCollection>()) {
+#ifndef NO_GRPC_BINARYLOG
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+#endif
     collection_->init_buf_.SetCollection(collection_);
     collection_->init_buf_.SendInitialMetadata(
         context->send_initial_metadata_, context->initial_metadata_flags());
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(collection_->init_buf_.SendMessage(request).ok());
+#else
+    GPR_CODEGEN_ASSERT(
+        collection_->init_buf_.SendMessage(request,
+                                           logs::GrpcLog::NewClientGrpcLog(
+                                               rid_, context_->peer(),
+                                               context_->method(),
+                                               logs::kRequest)).ok());
+#endif
     collection_->init_buf_.ClientSendClose();
     call_.PerformOps(&collection_->init_buf_);
   }
@@ -89,15 +106,28 @@ class ClientAsyncResponseReader final
     if (!context_->initial_metadata_received_) {
       collection_->finish_buf_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     collection_->finish_buf_.RecvMessage(msg);
     collection_->finish_buf_.AllowNoMessage();
     collection_->finish_buf_.ClientRecvStatus(context_, status);
+#else
+    collection_->finish_buf_.RecvMessage(
+        msg, logs::GrpcLog::NewClientGrpcLog(
+                 rid_, context_->peer(), context_->method(), logs::kResponse));
+    collection_->finish_buf_.ClientRecvStatus(
+        context_, status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&collection_->finish_buf_);
   }
 
  private:
   ClientContext* context_;
   Call call_;
+#ifndef NO_GRPC_BINARYLOG
+  string rid_;
+#endif
 
   class CallOpSetCollection : public CallOpSetCollectionInterface {
    public:
@@ -142,12 +172,29 @@ class ServerAsyncResponseWriter final : public ServerAsyncStreamingInterface {
       ctx_->sent_initial_metadata_ = true;
     }
     // The response is dropped if the status is not OK.
+#ifdef NO_GRPC_BINARYLOG
     if (status.ok()) {
       finish_buf_.ServerSendStatus(ctx_->trailing_metadata_,
                                    finish_buf_.SendMessage(msg));
     } else {
       finish_buf_.ServerSendStatus(ctx_->trailing_metadata_, status);
     }
+#else
+    if (status.ok()) {
+      finish_buf_.ServerSendStatus(
+          ctx_->trailing_metadata_,
+          finish_buf_.SendMessage(
+              msg, logs::GrpcLog::NewServerGrpcLog(
+                       ctx_->get_request_id(), ctx_->server_addr(),
+                       ctx_->peer(), ctx_->method(), logs::kResponse)));
+    } else {
+      finish_buf_.ServerSendStatus(
+          ctx_->trailing_metadata_, status,
+          logs::GrpcLog::NewServerGrpcLog(ctx_->get_request_id(),
+                                          ctx_->server_addr(), ctx_->peer(),
+                                          ctx_->method(), logs::kStatus));
+    }
+#endif
     call_.PerformOps(&finish_buf_);
   }
 

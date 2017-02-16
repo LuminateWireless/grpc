@@ -193,6 +193,8 @@ class Server::SyncRequest final : public CompletionQueueTag {
           request_payload_(mrd->request_payload_),
           method_(mrd->method_) {
       ctx_.set_call(mrd->call_);
+      ctx_.set_method(method_->name());
+      ctx_.set_server_addr(server->server_addr_);
       ctx_.cq_ = &cq_;
       GPR_ASSERT(mrd->in_flight_);
       mrd->in_flight_ = false;
@@ -473,6 +475,7 @@ void Server::RegisterAsyncGenericService(AsyncGenericService* service) {
 int Server::AddListeningPort(const grpc::string& addr,
                              ServerCredentials* creds) {
   GPR_ASSERT(!started_);
+  server_addr_ = addr;
   return creds->AddPortToServer(addr, server_);
 }
 

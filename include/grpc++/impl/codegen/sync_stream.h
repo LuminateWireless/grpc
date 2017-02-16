@@ -34,6 +34,10 @@
 #ifndef GRPCXX_IMPL_CODEGEN_SYNC_STREAM_H
 #define GRPCXX_IMPL_CODEGEN_SYNC_STREAM_H
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/grpc-log.h"
+#endif
+
 #include <grpc++/impl/codegen/call.h>
 #include <grpc++/impl/codegen/channel_interface.h>
 #include <grpc++/impl/codegen/client_context.h>
@@ -137,14 +141,27 @@ class ClientReader final : public ClientReaderInterface<R> {
   template <class W>
   ClientReader(ChannelInterface* channel, const RpcMethod& method,
                ClientContext* context, const W& request)
-      : context_(context), call_(channel->CreateCall(method, context, &cq_)) {
+      : context_(context),
+        call_(channel->CreateCall(method, context, &cq_)) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_ = 0;
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+#endif
     CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage,
               CallOpClientSendClose>
         ops;
     ops.SendInitialMetadata(context->send_initial_metadata_,
                             context->initial_metadata_flags());
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(ops.SendMessage(request).ok());
+#else
+    GPR_CODEGEN_ASSERT(
+        ops.SendMessage(request, logs::GrpcLog::NewClientGrpcLog(
+                                     rid_, context_->peer(), context_->method(),
+                                     logs::kRequest)).ok());
+#endif
     ops.ClientSendClose();
     call_.PerformOps(&ops);
     cq_.Pluck(&ops);
@@ -169,7 +186,14 @@ class ClientReader final : public ClientReaderInterface<R> {
     if (!context_->initial_metadata_received_) {
       ops.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     ops.RecvMessage(msg);
+#else
+    ops.RecvMessage(msg,
+                    logs::GrpcLog::NewClientGrpcLog(
+                        rid_ + "-" + std::to_string(sid_++), context_->peer(),
+                        context_->method(), logs::kResponse));
+#endif
     call_.PerformOps(&ops);
     return cq_.Pluck(&ops) && ops.got_message;
   }
@@ -177,7 +201,14 @@ class ClientReader final : public ClientReaderInterface<R> {
   Status Finish() override {
     CallOpSet<CallOpClientRecvStatus> ops;
     Status status;
+#ifdef NO_GRPC_BINARYLOG
     ops.ClientRecvStatus(context_, &status);
+#else
+    ops.ClientRecvStatus(
+        context_, &status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&ops);
     GPR_CODEGEN_ASSERT(cq_.Pluck(&ops));
     return status;
@@ -187,6 +218,12 @@ class ClientReader final : public ClientReaderInterface<R> {
   ClientContext* context_;
   CompletionQueue cq_;
   Call call_;
+#ifndef NO_GRPC_BINARYLOG
+  // Record the request id.
+  string rid_;
+  // Record the sequence id.
+  int sid_;
+#endif
 };
 
 /// Client-side interface for streaming writes of message of type \a W.
@@ -209,8 +246,18 @@ class ClientWriter : public ClientWriterInterface<W> {
   template <class R>
   ClientWriter(ChannelInterface* channel, const RpcMethod& method,
                ClientContext* context, R* response)
-      : context_(context), call_(channel->CreateCall(method, context, &cq_)) {
+      : context_(context),
+        call_(channel->CreateCall(method, context, &cq_)) {
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.RecvMessage(response);
+#else
+    sid_ = 0;
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+    finish_ops_.RecvMessage(response, logs::GrpcLog::NewClientGrpcLog(
+                                          rid_, context_->peer(),
+                                          context_->method(), logs::kResponse));
+#endif
     finish_ops_.AllowNoMessage();
 
     CallOpSet<CallOpSendInitialMetadata> ops;
@@ -232,7 +279,14 @@ class ClientWriter : public ClientWriterInterface<W> {
   using WriterInterface<W>::Write;
   bool Write(const W& msg, const WriteOptions& options) override {
     CallOpSet<CallOpSendMessage> ops;
+#ifdef NO_GRPC_BINARYLOG
     if (!ops.SendMessage(msg, options).ok()) {
+#else
+    if (!ops.SendMessage(msg, options, logs::GrpcLog::NewClientGrpcLog(
+                                           rid_ + "-" + std::to_string(sid_++),
+                                           context_->peer(), context_->method(),
+                                           logs::kRequest)).ok()) {
+#endif
       return false;
     }
     call_.PerformOps(&ops);
@@ -252,7 +306,14 @@ class ClientWriter : public ClientWriterInterface<W> {
     if (!context_->initial_metadata_received_) {
       finish_ops_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.ClientRecvStatus(context_, &status);
+#else
+    finish_ops_.ClientRecvStatus(
+        context_, &status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&finish_ops_);
     GPR_CODEGEN_ASSERT(cq_.Pluck(&finish_ops_));
     return status;
@@ -265,6 +326,12 @@ class ClientWriter : public ClientWriterInterface<W> {
       finish_ops_;
   CompletionQueue cq_;
   Call call_;
+#ifndef NO_GRPC_BINARYLOG
+  // Record the request id.
+  string rid_;
+  // Record the sequence id.
+  int sid_;
+#endif
 };
 
 /// Client-side interface for bi-directional streaming.
@@ -292,7 +359,14 @@ class ClientReaderWriter final : public ClientReaderWriterInterface<W, R> {
   /// Blocking create a stream.
   ClientReaderWriter(ChannelInterface* channel, const RpcMethod& method,
                      ClientContext* context)
-      : context_(context), call_(channel->CreateCall(method, context, &cq_)) {
+      : context_(context),
+        call_(channel->CreateCall(method, context, &cq_)) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_write_ = 0;
+    sid_read_ = 0;
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+#endif
     CallOpSet<CallOpSendInitialMetadata> ops;
     ops.SendInitialMetadata(context->send_initial_metadata_,
                             context->initial_metadata_flags());
@@ -319,7 +393,14 @@ class ClientReaderWriter final : public ClientReaderWriterInterface<W, R> {
     if (!context_->initial_metadata_received_) {
       ops.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     ops.RecvMessage(msg);
+#else
+    ops.RecvMessage(
+        msg, logs::GrpcLog::NewClientGrpcLog(
+                 rid_ + "-" + std::to_string(sid_read_++), context_->peer(),
+                 context_->method(), logs::kResponse));
+#endif
     call_.PerformOps(&ops);
     return cq_.Pluck(&ops) && ops.got_message;
   }
@@ -327,7 +408,16 @@ class ClientReaderWriter final : public ClientReaderWriterInterface<W, R> {
   using WriterInterface<W>::Write;
   bool Write(const W& msg, const WriteOptions& options) override {
     CallOpSet<CallOpSendMessage> ops;
+#ifdef NO_GRPC_BINARYLOG
     if (!ops.SendMessage(msg, options).ok()) return false;
+#else
+    if (!ops.SendMessage(msg, options,
+                         logs::GrpcLog::NewClientGrpcLog(
+                             rid_ + "-" + std::to_string(sid_write_++),
+                             context_->peer(), context_->method(),
+                             logs::kRequest)).ok())
+      return false;
+#endif
     call_.PerformOps(&ops);
     return cq_.Pluck(&ops);
   }
@@ -345,7 +435,14 @@ class ClientReaderWriter final : public ClientReaderWriterInterface<W, R> {
       ops.RecvInitialMetadata(context_);
     }
     Status status;
+#ifdef NO_GRPC_BINARYLOG
     ops.ClientRecvStatus(context_, &status);
+#else
+    ops.ClientRecvStatus(
+        context_, &status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&ops);
     GPR_CODEGEN_ASSERT(cq_.Pluck(&ops));
     return status;
@@ -355,6 +452,11 @@ class ClientReaderWriter final : public ClientReaderWriterInterface<W, R> {
   ClientContext* context_;
   CompletionQueue cq_;
   Call call_;
+#ifndef NO_GRPC_BINARYLOG
+  string rid_;
+  int sid_write_;
+  int sid_read_;
+#endif
 };
 
 /// Server-side interface for streaming reads of message of type \a R.
@@ -365,7 +467,12 @@ class ServerReaderInterface : public ServerStreamingInterface,
 template <class R>
 class ServerReader final : public ServerReaderInterface<R> {
  public:
-  ServerReader(Call* call, ServerContext* ctx) : call_(call), ctx_(ctx) {}
+  ServerReader(Call* call, ServerContext* ctx)
+      : call_(call), ctx_(ctx) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_ = 0;
+#endif
+  }
 
   void SendInitialMetadata() override {
     GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
@@ -388,7 +495,15 @@ class ServerReader final : public ServerReaderInterface<R> {
 
   bool Read(R* msg) override {
     CallOpSet<CallOpRecvMessage<R>> ops;
+#ifdef NO_GRPC_BINARYLOG
     ops.RecvMessage(msg);
+#else
+    ops.RecvMessage(
+        msg,
+        logs::GrpcLog::NewServerGrpcLog(
+            ctx_->get_request_id() + "-" + std::to_string(sid_++),
+            ctx_->server_addr(), ctx_->peer(), ctx_->method(), logs::kRequest));
+#endif
     call_->PerformOps(&ops);
     return call_->cq()->Pluck(&ops) && ops.got_message;
   }
@@ -396,6 +511,9 @@ class ServerReader final : public ServerReaderInterface<R> {
  private:
   Call* const call_;
   ServerContext* const ctx_;
+#ifndef NO_GRPC_BINARYLOG
+  int sid_;
+#endif
 };
 
 /// Server-side interface for streaming writes of message of type \a W.
@@ -406,7 +524,12 @@ class ServerWriterInterface : public ServerStreamingInterface,
 template <class W>
 class ServerWriter final : public ServerWriterInterface<W> {
  public:
-  ServerWriter(Call* call, ServerContext* ctx) : call_(call), ctx_(ctx) {}
+  ServerWriter(Call* call, ServerContext* ctx)
+      : call_(call), ctx_(ctx) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_ = 0;
+#endif
+  }
 
   void SendInitialMetadata() override {
     GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
@@ -425,7 +548,16 @@ class ServerWriter final : public ServerWriterInterface<W> {
   using WriterInterface<W>::Write;
   bool Write(const W& msg, const WriteOptions& options) override {
     CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage> ops;
+#ifdef NO_GRPC_BINARYLOG
     if (!ops.SendMessage(msg, options).ok()) {
+#else
+    if (!ops.SendMessage(
+                 msg, options,
+                 logs::GrpcLog::NewServerGrpcLog(
+                     ctx_->get_request_id() + "-" + std::to_string(sid_++),
+                     ctx_->server_addr(), ctx_->peer(), ctx_->method(),
+                     logs::kResponse)).ok()) {
+#endif
       return false;
     }
     if (!ctx_->sent_initial_metadata_) {
@@ -443,6 +575,9 @@ class ServerWriter final : public ServerWriterInterface<W> {
  private:
   Call* const call_;
   ServerContext* const ctx_;
+#ifndef NO_GRPC_BINARYLOG
+  int sid_;
+#endif
 };
 
 /// Server-side interface for bi-directional streaming.
@@ -457,7 +592,12 @@ template <class W, class R>
 class ServerReaderWriterBody final {
  public:
   ServerReaderWriterBody(Call* call, ServerContext* ctx)
-      : call_(call), ctx_(ctx) {}
+      : call_(call), ctx_(ctx) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_write_ = 0;
+    sid_read_ = 0;
+#endif
+  }
 
   void SendInitialMetadata() {
     GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
@@ -480,14 +620,31 @@ class ServerReaderWriterBody final {
 
   bool Read(R* msg) {
     CallOpSet<CallOpRecvMessage<R>> ops;
+#ifdef NO_GRPC_BINARYLOG
     ops.RecvMessage(msg);
+#else
+    ops.RecvMessage(
+        msg,
+        logs::GrpcLog::NewServerGrpcLog(
+            ctx_->get_request_id() + "-" + std::to_string(sid_read_++),
+            ctx_->server_addr(), ctx_->peer(), ctx_->method(), logs::kRequest));
+#endif
     call_->PerformOps(&ops);
     return call_->cq()->Pluck(&ops) && ops.got_message;
   }
 
   bool Write(const W& msg, const WriteOptions& options) {
     CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage> ops;
+#ifdef NO_GRPC_BINARYLOG
     if (!ops.SendMessage(msg, options).ok()) {
+#else
+    if (!ops.SendMessage(msg, options, logs::GrpcLog::NewServerGrpcLog(
+                                           ctx_->get_request_id() + "-" +
+                                               std::to_string(sid_write_++),
+                                           ctx_->server_addr(), ctx_->peer(),
+                                           ctx_->method(), logs::kResponse))
+             .ok()) {
+#endif
       return false;
     }
     if (!ctx_->sent_initial_metadata_) {
@@ -505,6 +662,10 @@ class ServerReaderWriterBody final {
  private:
   Call* const call_;
   ServerContext* const ctx_;
+#ifndef NO_GRPC_BINARYLOG
+  int sid_write_;
+  int sid_read_;
+#endif
 };
 }
 

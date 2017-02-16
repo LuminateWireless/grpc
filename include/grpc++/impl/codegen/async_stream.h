@@ -34,6 +34,11 @@
 #ifndef GRPCXX_IMPL_CODEGEN_ASYNC_STREAM_H
 #define GRPCXX_IMPL_CODEGEN_ASYNC_STREAM_H
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/log_message.pb.h"
+#include "logs/grpc-log.h"
+#endif
+
 #include <grpc++/impl/codegen/call.h>
 #include <grpc++/impl/codegen/channel_interface.h>
 #include <grpc++/impl/codegen/core_codegen_interface.h>
@@ -115,12 +120,25 @@ class ClientAsyncReader final : public ClientAsyncReaderInterface<R> {
   ClientAsyncReader(ChannelInterface* channel, CompletionQueue* cq,
                     const RpcMethod& method, ClientContext* context,
                     const W& request, void* tag)
-      : context_(context), call_(channel->CreateCall(method, context, cq)) {
+      : context_(context),
+        call_(channel->CreateCall(method, context, cq)) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_ = 0;
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+#endif
     init_ops_.set_output_tag(tag);
     init_ops_.SendInitialMetadata(context->send_initial_metadata_,
                                   context->initial_metadata_flags());
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(init_ops_.SendMessage(request).ok());
+#else
+    GPR_CODEGEN_ASSERT(init_ops_.SendMessage(request, logs::GrpcLog::NewClientGrpcLog(
+                                                  rid_, context_->peer(),
+                                                  context_->method(),
+                                                  logs::kRequest)).ok());
+#endif
     init_ops_.ClientSendClose();
     call_.PerformOps(&init_ops_);
   }
@@ -138,7 +156,14 @@ class ClientAsyncReader final : public ClientAsyncReaderInterface<R> {
     if (!context_->initial_metadata_received_) {
       read_ops_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     read_ops_.RecvMessage(msg);
+#else
+    read_ops_.RecvMessage(
+        msg, logs::GrpcLog::NewClientGrpcLog(
+                 rid_ + "-" + std::to_string(sid_++), context_->peer(),
+                 context_->method(), logs::kResponse));
+#endif
     call_.PerformOps(&read_ops_);
   }
 
@@ -147,7 +172,14 @@ class ClientAsyncReader final : public ClientAsyncReaderInterface<R> {
     if (!context_->initial_metadata_received_) {
       finish_ops_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.ClientRecvStatus(context_, status);
+#else
+    finish_ops_.ClientRecvStatus(
+        context_, status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&finish_ops_);
   }
 
@@ -159,6 +191,10 @@ class ClientAsyncReader final : public ClientAsyncReaderInterface<R> {
   CallOpSet<CallOpRecvInitialMetadata> meta_ops_;
   CallOpSet<CallOpRecvInitialMetadata, CallOpRecvMessage<R>> read_ops_;
   CallOpSet<CallOpRecvInitialMetadata, CallOpClientRecvStatus> finish_ops_;
+#ifndef NO_GRPC_BINARYLOG
+  string rid_;
+  int sid_;
+#endif
 };
 
 /// Common interface for client side asynchronous writing.
@@ -180,8 +216,18 @@ class ClientAsyncWriter final : public ClientAsyncWriterInterface<W> {
   ClientAsyncWriter(ChannelInterface* channel, CompletionQueue* cq,
                     const RpcMethod& method, ClientContext* context,
                     R* response, void* tag)
-      : context_(context), call_(channel->CreateCall(method, context, cq)) {
+      : context_(context),
+        call_(channel->CreateCall(method, context, cq)) {
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.RecvMessage(response);
+#else
+    sid_ = 0;
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+    finish_ops_.RecvMessage(response, logs::GrpcLog::NewClientGrpcLog(
+                                          rid_, context_->peer(),
+                                          context_->method(), logs::kRequest));
+#endif
     finish_ops_.AllowNoMessage();
 
     init_ops_.set_output_tag(tag);
@@ -201,7 +247,15 @@ class ClientAsyncWriter final : public ClientAsyncWriterInterface<W> {
   void Write(const W& msg, void* tag) override {
     write_ops_.set_output_tag(tag);
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
+#else
+    GPR_CODEGEN_ASSERT(
+        write_ops_.SendMessage(msg, logs::GrpcLog::NewClientGrpcLog(
+                                        rid_ + "-" + std::to_string(sid_++),
+                                        context_->peer(), context_->method(),
+                                        logs::kResponse)).ok());
+#endif
     call_.PerformOps(&write_ops_);
   }
 
@@ -216,7 +270,14 @@ class ClientAsyncWriter final : public ClientAsyncWriterInterface<W> {
     if (!context_->initial_metadata_received_) {
       finish_ops_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.ClientRecvStatus(context_, status);
+#else
+    finish_ops_.ClientRecvStatus(
+        context_, status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&finish_ops_);
   }
 
@@ -230,6 +291,10 @@ class ClientAsyncWriter final : public ClientAsyncWriterInterface<W> {
   CallOpSet<CallOpRecvInitialMetadata, CallOpGenericRecvMessage,
             CallOpClientRecvStatus>
       finish_ops_;
+#ifndef NO_GRPC_BINARYLOG
+  string rid_;
+  int sid_;
+#endif
 };
 
 /// Client-side interface for asynchronous bi-directional streaming.
@@ -252,7 +317,14 @@ class ClientAsyncReaderWriter final
   ClientAsyncReaderWriter(ChannelInterface* channel, CompletionQueue* cq,
                           const RpcMethod& method, ClientContext* context,
                           void* tag)
-      : context_(context), call_(channel->CreateCall(method, context, cq)) {
+      : context_(context),
+        call_(channel->CreateCall(method, context, cq)) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_write_ = 0;
+    sid_read_ = 0;
+    context_->set_method(method.name());
+    context_->AddMetadata("rid", (rid_ = logs::UuidGenerator::GetUuid()));
+#endif
     init_ops_.set_output_tag(tag);
     init_ops_.SendInitialMetadata(context->send_initial_metadata_,
                                   context->initial_metadata_flags());
@@ -272,14 +344,30 @@ class ClientAsyncReaderWriter final
     if (!context_->initial_metadata_received_) {
       read_ops_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     read_ops_.RecvMessage(msg);
+#else
+    read_ops_.RecvMessage(
+        msg, logs::GrpcLog::NewClientGrpcLog(
+                 rid_ + "-" + std::to_string(sid_read_++), context_->peer(),
+                 context_->method(), logs::kResponse));
+#endif
     call_.PerformOps(&read_ops_);
   }
 
   void Write(const W& msg, void* tag) override {
     write_ops_.set_output_tag(tag);
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
+#else
+    GPR_CODEGEN_ASSERT(
+        write_ops_.SendMessage(msg,
+                               logs::GrpcLog::NewClientGrpcLog(
+                                   rid_ + "-" + std::to_string(sid_write_++),
+                                   context_->peer(), context_->method(),
+                                   logs::kRequest)).ok());
+#endif
     call_.PerformOps(&write_ops_);
   }
 
@@ -294,7 +382,14 @@ class ClientAsyncReaderWriter final
     if (!context_->initial_metadata_received_) {
       finish_ops_.RecvInitialMetadata(context_);
     }
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.ClientRecvStatus(context_, status);
+#else
+    finish_ops_.ClientRecvStatus(
+        context_, status,
+        logs::GrpcLog::NewClientGrpcLog(rid_, context_->peer(),
+                                        context_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&finish_ops_);
   }
 
@@ -307,6 +402,11 @@ class ClientAsyncReaderWriter final
   CallOpSet<CallOpSendMessage> write_ops_;
   CallOpSet<CallOpClientSendClose> writes_done_ops_;
   CallOpSet<CallOpRecvInitialMetadata, CallOpClientRecvStatus> finish_ops_;
+#ifndef NO_GRPC_BINARYLOG
+  string rid_;
+  int sid_write_;
+  int sid_read_;
+#endif
 };
 
 template <class W, class R>
@@ -322,7 +422,11 @@ template <class W, class R>
 class ServerAsyncReader final : public ServerAsyncReaderInterface<W, R> {
  public:
   explicit ServerAsyncReader(ServerContext* ctx)
-      : call_(nullptr, nullptr, nullptr), ctx_(ctx) {}
+      : call_(nullptr, nullptr, nullptr), ctx_(ctx) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_ = 0;
+#endif
+  }
 
   void SendInitialMetadata(void* tag) override {
     GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
@@ -339,7 +443,15 @@ class ServerAsyncReader final : public ServerAsyncReaderInterface<W, R> {
 
   void Read(R* msg, void* tag) override {
     read_ops_.set_output_tag(tag);
+#ifdef NO_GRPC_BINARYLOG
     read_ops_.RecvMessage(msg);
+#else
+    read_ops_.RecvMessage(
+        msg,
+        logs::GrpcLog::NewServerGrpcLog(
+            ctx_->get_request_id() + "-" + std::to_string(sid_++),
+            ctx_->server_addr(), ctx_->peer(), ctx_->method(), logs::kRequest));
+#endif
     call_.PerformOps(&read_ops_);
   }
 
@@ -354,12 +466,29 @@ class ServerAsyncReader final : public ServerAsyncReaderInterface<W, R> {
       ctx_->sent_initial_metadata_ = true;
     }
     // The response is dropped if the status is not OK.
+#ifdef NO_GRPC_BINARYLOG
     if (status.ok()) {
       finish_ops_.ServerSendStatus(ctx_->trailing_metadata_,
-                                   finish_ops_.SendMessage(msg));
+                                         finish_ops_.SendMessage(msg));
     } else {
       finish_ops_.ServerSendStatus(ctx_->trailing_metadata_, status);
     }
+#else
+    if (status.ok()) {
+      finish_ops_.ServerSendStatus(
+          ctx_->trailing_metadata_,
+          finish_ops_.SendMessage(
+              msg, logs::GrpcLog::NewServerGrpcLog(
+                       ctx_->get_request_id(), ctx_->server_addr(),
+                       ctx_->peer(), ctx_->method(), logs::kResponse)));
+    } else {
+      finish_ops_.ServerSendStatus(
+          ctx_->trailing_metadata_, status,
+          logs::GrpcLog::NewServerGrpcLog(ctx_->get_request_id(),
+                                          ctx_->server_addr(), ctx_->peer(),
+                                          ctx_->method(), logs::kStatus));
+    }
+#endif
     call_.PerformOps(&finish_ops_);
   }
 
@@ -388,6 +517,9 @@ class ServerAsyncReader final : public ServerAsyncReaderInterface<W, R> {
   CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage,
             CallOpServerSendStatus>
       finish_ops_;
+#ifndef NO_GRPC_BINARYLOG
+  int sid_;
+#endif
 };
 
 template <class W>
@@ -401,7 +533,11 @@ template <class W>
 class ServerAsyncWriter final : public ServerAsyncWriterInterface<W> {
  public:
   explicit ServerAsyncWriter(ServerContext* ctx)
-      : call_(nullptr, nullptr, nullptr), ctx_(ctx) {}
+      : call_(nullptr, nullptr, nullptr), ctx_(ctx) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_ = 0;
+#endif
+  }
 
   void SendInitialMetadata(void* tag) override {
     GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
@@ -427,7 +563,16 @@ class ServerAsyncWriter final : public ServerAsyncWriterInterface<W> {
       ctx_->sent_initial_metadata_ = true;
     }
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
+#else
+    GPR_CODEGEN_ASSERT(
+        write_ops_.SendMessage(msg, logs::GrpcLog::NewServerGrpcLog(
+                                        ctx_->get_request_id() + "-" +
+                                            std::to_string(sid_++),
+                                        ctx_->server_addr(), ctx_->peer(),
+                                        ctx_->method(), logs::kResponse)).ok());
+#endif
     call_.PerformOps(&write_ops_);
   }
 
@@ -441,7 +586,15 @@ class ServerAsyncWriter final : public ServerAsyncWriterInterface<W> {
       }
       ctx_->sent_initial_metadata_ = true;
     }
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.ServerSendStatus(ctx_->trailing_metadata_, status);
+#else
+    finish_ops_.ServerSendStatus(
+        ctx_->trailing_metadata_, status,
+        logs::GrpcLog::NewServerGrpcLog(ctx_->get_request_id(),
+                                        ctx_->server_addr(), ctx_->peer(),
+                                        ctx_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&finish_ops_);
   }
 
@@ -453,6 +606,9 @@ class ServerAsyncWriter final : public ServerAsyncWriterInterface<W> {
   CallOpSet<CallOpSendInitialMetadata> meta_ops_;
   CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage> write_ops_;
   CallOpSet<CallOpSendInitialMetadata, CallOpServerSendStatus> finish_ops_;
+#ifndef NO_GRPC_BINARYLOG
+  int sid_;
+#endif
 };
 
 /// Server-side interface for asynchronous bi-directional streaming.
@@ -469,7 +625,13 @@ class ServerAsyncReaderWriter final
     : public ServerAsyncReaderWriterInterface<W, R> {
  public:
   explicit ServerAsyncReaderWriter(ServerContext* ctx)
-      : call_(nullptr, nullptr, nullptr), ctx_(ctx) {}
+      : call_(nullptr, nullptr, nullptr),
+        ctx_(ctx) {
+#ifndef NO_GRPC_BINARYLOG
+    sid_write_ = 0,
+    sid_read_ = 0;
+#endif
+  }
 
   void SendInitialMetadata(void* tag) override {
     GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
@@ -486,7 +648,15 @@ class ServerAsyncReaderWriter final
 
   void Read(R* msg, void* tag) override {
     read_ops_.set_output_tag(tag);
+#ifdef NO_GRPC_BINARYLOG
     read_ops_.RecvMessage(msg);
+#else
+    read_ops_.RecvMessage(
+        msg,
+        logs::GrpcLog::NewServerGrpcLog(
+            ctx_->get_request_id() + "-" + std::to_string(sid_read_++),
+            ctx_->server_addr(), ctx_->peer(), ctx_->method(), logs::kRequest));
+#endif
     call_.PerformOps(&read_ops_);
   }
 
@@ -501,7 +671,16 @@ class ServerAsyncReaderWriter final
       ctx_->sent_initial_metadata_ = true;
     }
     // TODO(ctiller): don't assert
+#ifdef NO_GRPC_BINARYLOG
     GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
+#else
+    GPR_CODEGEN_ASSERT(
+        write_ops_.SendMessage(msg, logs::GrpcLog::NewServerGrpcLog(
+                                        ctx_->get_request_id() + "-" +
+                                            std::to_string(sid_write_++),
+                                        ctx_->server_addr(), ctx_->peer(),
+                                        ctx_->method(), logs::kResponse)).ok());
+#endif
     call_.PerformOps(&write_ops_);
   }
 
@@ -515,7 +694,15 @@ class ServerAsyncReaderWriter final
       }
       ctx_->sent_initial_metadata_ = true;
     }
+#ifdef NO_GRPC_BINARYLOG
     finish_ops_.ServerSendStatus(ctx_->trailing_metadata_, status);
+#else
+    finish_ops_.ServerSendStatus(
+        ctx_->trailing_metadata_, status,
+        logs::GrpcLog::NewServerGrpcLog(ctx_->get_request_id(),
+                                        ctx_->server_addr(), ctx_->peer(),
+                                        ctx_->method(), logs::kStatus));
+#endif
     call_.PerformOps(&finish_ops_);
   }
 
@@ -530,6 +717,10 @@ class ServerAsyncReaderWriter final
   CallOpSet<CallOpRecvMessage<R>> read_ops_;
   CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage> write_ops_;
   CallOpSet<CallOpSendInitialMetadata, CallOpServerSendStatus> finish_ops_;
+#ifndef NO_GRPC_BINARYLOG
+  int sid_write_;
+  int sid_read_;
+#endif
 };
 
 }  // namespace grpc

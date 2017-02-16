@@ -40,6 +40,12 @@
 #include <grpc++/impl/codegen/rpc_service_method.h>
 #include <grpc/impl/codegen/grpc_types.h>
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/grpc-log.h"
+#endif
+
+#include <grpc++/impl/codegen/server_context.h>
+
 namespace grpc {
 
 class AsyncGenericService;
@@ -90,6 +96,10 @@ class ServerInterface : public CallHook {
   /// \warning The server must be either shutting down or some other thread must
   /// call \a Shutdown for this function to ever return.
   virtual void Wait() = 0;
+
+  // This abstract function is needed since in PayloadAsyncRequest's construction
+  // function we need to access the server_addr_ through ServerInterface.
+  virtual const grpc::string server_addr() = 0;
 
  protected:
   friend class Service;
@@ -176,6 +186,7 @@ class ServerInterface : public CallHook {
                           ServerCompletionQueue* notification_cq, void* tag)
         : RegisteredAsyncRequest(server, context, stream, call_cq, tag) {
       IssueRequest(registered_method, nullptr, notification_cq);
+      context_->set_server_addr(server->server_addr());
     }
 
     // uses RegisteredAsyncRequest::FinalizeResult
@@ -191,15 +202,32 @@ class ServerInterface : public CallHook {
                         ServerCompletionQueue* notification_cq, void* tag,
                         Message* request)
         : RegisteredAsyncRequest(server, context, stream, call_cq, tag),
-          request_(request) {
+          request_(request), context_(context) {
       IssueRequest(registered_method, &payload_, notification_cq);
+      context_->set_server_addr(server->server_addr());
     }
 
     bool FinalizeResult(void** tag, bool* status) override {
+#ifndef NO_GRPC_BINARYLOG
+      // Why we need context here: because *context_ is populated in function
+      // RegisteredAsyncRequest::FinalizeResult, however, context_ is deleted in that
+      // function (calling delete this), so we need context here.
+      // Why we need to copy payload_ and destroy payload after: because payload_ is
+      // destroyed in SerializationTraits<Message>::Deserialize function. The copy just
+      // increase the reference count of all the source slices.
+      ServerContext* context = context_;
+      grpc_byte_buffer* payload = grpc_byte_buffer_copy(payload_);
+#endif
       bool serialization_status =
           *status && payload_ &&
           SerializationTraits<Message>::Deserialize(payload_, request_).ok();
       bool ret = RegisteredAsyncRequest::FinalizeResult(tag, status);
+#ifndef NO_GRPC_BINARYLOG
+      logs::GrpcLog::ServerGrpcLog(context->get_request_id(),
+                                   context->server_addr(), context->peer(),
+                                   context->method(), payload, logs::kRequest);
+      grpc_byte_buffer_destroy(payload);
+#endif
       *status = serialization_status && *status;
       return ret;
     }
@@ -207,6 +235,7 @@ class ServerInterface : public CallHook {
    private:
     grpc_byte_buffer* payload_;
     Message* const request_;
+    ServerContext* context_;
   };
 
   class GenericAsyncRequest : public BaseAsyncRequest {

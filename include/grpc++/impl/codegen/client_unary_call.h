@@ -34,6 +34,10 @@
 #ifndef GRPCXX_IMPL_CODEGEN_CLIENT_UNARY_CALL_H
 #define GRPCXX_IMPL_CODEGEN_CLIENT_UNARY_CALL_H
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/grpc-log.h"
+#endif
+
 #include <grpc++/impl/codegen/call.h>
 #include <grpc++/impl/codegen/channel_interface.h>
 #include <grpc++/impl/codegen/config.h>
@@ -58,16 +62,35 @@ Status BlockingUnaryCall(ChannelInterface* channel, const RpcMethod& method,
             CallOpRecvInitialMetadata, CallOpRecvMessage<OutputMessage>,
             CallOpClientSendClose, CallOpClientRecvStatus>
       ops;
+#ifdef NO_GRPC_BINARYLOG
   Status status = ops.SendMessage(request);
+#else
+  context->set_method(method.name());
+  const string rid = logs::UuidGenerator::GetUuid();
+  context->AddMetadata("rid", rid);
+  Status status = ops.SendMessage(
+      request, logs::GrpcLog::NewClientGrpcLog(
+                   rid, context->peer(), context->method(), logs::kRequest));
+#endif
   if (!status.ok()) {
     return status;
   }
   ops.SendInitialMetadata(context->send_initial_metadata_,
                           context->initial_metadata_flags());
   ops.RecvInitialMetadata(context);
+#ifdef NO_GRPC_BINARYLOG
   ops.RecvMessage(result);
   ops.ClientSendClose();
   ops.ClientRecvStatus(context, &status);
+#else
+  ops.RecvMessage(
+      result, logs::GrpcLog::NewClientGrpcLog(
+                  rid, context->peer(), context->method(), logs::kResponse));
+  ops.ClientSendClose();
+  ops.ClientRecvStatus(context, &status, logs::GrpcLog::NewClientGrpcLog(
+                                             rid, context->peer(),
+                                             context->method(), logs::kStatus));
+#endif
   call.PerformOps(&ops);
   if (cq.Pluck(&ops)) {
     if (!ops.got_message && status.ok()) {

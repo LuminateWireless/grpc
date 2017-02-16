@@ -45,6 +45,8 @@
 #include <grpc++/impl/codegen/time.h>
 #include <grpc/impl/codegen/compression_types.h>
 
+#include <grpc/impl/codegen/log.h>
+
 struct grpc_metadata;
 struct grpc_call;
 struct census_context;
@@ -170,6 +172,27 @@ class ServerContext {
   // Applications never need to call this method.
   grpc_call* c_call() { return call_; }
 
+  void set_method(const grpc::string& method) { method_ = method; }
+
+  const grpc::string& method() const { return method_; }
+
+  void set_server_addr(const grpc::string& server_addr) {
+    server_addr_ = server_addr;
+  }
+
+  const grpc::string& server_addr() const { return server_addr_; }
+
+#ifndef NO_GRPC_BINARYLOG
+  // Get the request id from metadata.
+  const grpc::string get_request_id() {
+    if (client_metadata_.find("rid") != client_metadata_.end()) {
+      return grpc::string(client_metadata_.find("rid")->second.data());
+    } else {
+      return "DefaultRid";
+    }
+  }
+#endif
+
  private:
   friend class ::grpc::testing::InteropServerContextInspector;
   friend class ::grpc::testing::ServerContextTestSpouse;
@@ -231,6 +254,8 @@ class ServerContext {
   bool compression_level_set_;
   grpc_compression_level compression_level_;
   grpc_compression_algorithm compression_algorithm_;
+  grpc::string method_;
+  grpc::string server_addr_;
 };
 
 }  // namespace grpc

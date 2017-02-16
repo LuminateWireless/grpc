@@ -302,6 +302,10 @@ class ClientContext {
   /// There is no guarantee the call will be cancelled.
   void TryCancel();
 
+  void set_method(const grpc::string& method) { method_ = method; }
+
+  const grpc::string& method() const { return method_; }
+
   /// Global Callbacks
   ///
   /// Can be set exactly once per application to install hooks whenever
@@ -384,6 +388,7 @@ class ClientContext {
   PropagationOptions propagation_options_;
 
   grpc_compression_algorithm compression_algorithm_;
+  grpc::string method_;
 };
 
 }  // namespace grpc

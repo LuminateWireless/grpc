@@ -34,6 +34,11 @@
 #ifndef GRPCXX_IMPL_CODEGEN_METHOD_HANDLER_IMPL_H
 #define GRPCXX_IMPL_CODEGEN_METHOD_HANDLER_IMPL_H
 
+#ifndef NO_GRPC_BINARYLOG
+#include "logs/log_message.pb.h"
+#include "logs/grpc-log.h"
+#endif
+
 #include <grpc++/impl/codegen/core_codegen_interface.h>
 #include <grpc++/impl/codegen/rpc_service_method.h>
 #include <grpc++/impl/codegen/sync_stream.h>
@@ -51,6 +56,12 @@ class RpcMethodHandler : public MethodHandler {
       : func_(func), service_(service) {}
 
   void RunHandler(const HandlerParameter& param) final {
+#ifndef NO_GRPC_BINARYLOG
+    logs::GrpcLog::ServerGrpcLog(
+        param.server_context->get_request_id(),
+        param.server_context->server_addr(), param.server_context->peer(),
+        param.server_context->method(), param.request, logs::kRequest);
+#endif
     RequestType req;
     Status status =
         SerializationTraits<RequestType>::Deserialize(param.request, &req);
@@ -68,10 +79,28 @@ class RpcMethodHandler : public MethodHandler {
     if (param.server_context->compression_level_set()) {
       ops.set_compression_level(param.server_context->compression_level());
     }
+
+#ifdef NO_GRPC_BINARYLOG
     if (status.ok()) {
       status = ops.SendMessage(rsp);
     }
     ops.ServerSendStatus(param.server_context->trailing_metadata_, status);
+#else
+    if (status.ok()) {
+      status = ops.SendMessage(
+          rsp,
+          logs::GrpcLog::NewServerGrpcLog(
+              param.server_context->get_request_id(),
+              param.server_context->server_addr(), param.server_context->peer(),
+              param.server_context->method(), logs::kResponse));
+    }
+    ops.ServerSendStatus(
+        param.server_context->trailing_metadata_, status,
+        logs::GrpcLog::NewServerGrpcLog(
+            param.server_context->get_request_id(),
+            param.server_context->server_addr(), param.server_context->peer(),
+            param.server_context->method(), logs::kStatus));
+#endif
     param.call->PerformOps(&ops);
     param.call->cq()->Pluck(&ops);
   }
@@ -110,10 +139,27 @@ class ClientStreamingHandler : public MethodHandler {
     if (param.server_context->compression_level_set()) {
       ops.set_compression_level(param.server_context->compression_level());
     }
+#ifdef NO_GRPC_BINARYLOG
     if (status.ok()) {
       status = ops.SendMessage(rsp);
     }
     ops.ServerSendStatus(param.server_context->trailing_metadata_, status);
+#else
+    if (status.ok()) {
+      status = ops.SendMessage(
+          rsp,
+          logs::GrpcLog::NewServerGrpcLog(
+              param.server_context->get_request_id(),
+              param.server_context->server_addr(), param.server_context->peer(),
+              param.server_context->method(), logs::kResponse));
+    }
+    ops.ServerSendStatus(
+        param.server_context->trailing_metadata_, status,
+        logs::GrpcLog::NewServerGrpcLog(
+            param.server_context->get_request_id(),
+            param.server_context->server_addr(), param.server_context->peer(),
+            param.server_context->method(), logs::kStatus));
+#endif
     param.call->PerformOps(&ops);
     param.call->cq()->Pluck(&ops);
   }
@@ -137,6 +183,12 @@ class ServerStreamingHandler : public MethodHandler {
       : func_(func), service_(service) {}
 
   void RunHandler(const HandlerParameter& param) final {
+#ifndef NO_GRPC_BINARYLOG
+    logs::GrpcLog::ServerGrpcLog(
+        param.server_context->get_request_id(),
+        param.server_context->server_addr(), param.server_context->peer(),
+        param.server_context->method(), param.request, logs::kRequest);
+#endif
     RequestType req;
     Status status =
         SerializationTraits<RequestType>::Deserialize(param.request, &req);
@@ -154,7 +206,16 @@ class ServerStreamingHandler : public MethodHandler {
         ops.set_compression_level(param.server_context->compression_level());
       }
     }
+#ifdef NO_GRPC_BINARYLOG
     ops.ServerSendStatus(param.server_context->trailing_metadata_, status);
+#else
+    ops.ServerSendStatus(
+        param.server_context->trailing_metadata_, status,
+        logs::GrpcLog::NewServerGrpcLog(
+            param.server_context->get_request_id(),
+            param.server_context->server_addr(), param.server_context->peer(),
+            param.server_context->method(), logs::kStatus));
+#endif
     param.call->PerformOps(&ops);
     param.call->cq()->Pluck(&ops);
   }
@@ -198,7 +259,16 @@ class TemplatedBidiStreamingHandler : public MethodHandler {
                         "Service did not provide response message");
       }
     }
+#ifdef NO_GRPC_BINARYLOG
     ops.ServerSendStatus(param.server_context->trailing_metadata_, status);
+#else
+    ops.ServerSendStatus(
+        param.server_context->trailing_metadata_, status,
+        logs::GrpcLog::NewServerGrpcLog(
+            param.server_context->get_request_id(),
+            param.server_context->server_addr(), param.server_context->peer(),
+            param.server_context->method(), logs::kStatus));
+#endif
     param.call->PerformOps(&ops);
     param.call->cq()->Pluck(&ops);
   }

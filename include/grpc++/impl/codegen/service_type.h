@@ -39,6 +39,7 @@
 #include <grpc++/impl/codegen/rpc_service_method.h>
 #include <grpc++/impl/codegen/serialization_traits.h>
 #include <grpc++/impl/codegen/server_interface.h>
+#include <grpc++/impl/codegen/server_context.h>
 #include <grpc++/impl/codegen/status.h>
 
 namespace grpc {
@@ -99,14 +100,16 @@ class Service {
                          ServerAsyncStreamingInterface* stream,
                          CompletionQueue* call_cq,
                          ServerCompletionQueue* notification_cq, void* tag) {
+    context->set_method(grpc::string(methods_[index]->name()));
     server_->RequestAsyncCall(methods_[index].get(), context, stream, call_cq,
-                              notification_cq, tag, request);
+                                  notification_cq, tag, request);
   }
   void RequestAsyncClientStreaming(int index, ServerContext* context,
                                    ServerAsyncStreamingInterface* stream,
                                    CompletionQueue* call_cq,
                                    ServerCompletionQueue* notification_cq,
                                    void* tag) {
+    context->set_method(grpc::string(methods_[index]->name()));
     server_->RequestAsyncCall(methods_[index].get(), context, stream, call_cq,
                               notification_cq, tag);
   }
@@ -117,6 +120,7 @@ class Service {
                                    CompletionQueue* call_cq,
                                    ServerCompletionQueue* notification_cq,
                                    void* tag) {
+    context->set_method(grpc::string(methods_[index]->name()));
     server_->RequestAsyncCall(methods_[index].get(), context, stream, call_cq,
                               notification_cq, tag, request);
   }
@@ -125,6 +129,7 @@ class Service {
                                  CompletionQueue* call_cq,
                                  ServerCompletionQueue* notification_cq,
                                  void* tag) {
+    context->set_method(grpc::string(methods_[index]->name()));
     server_->RequestAsyncCall(methods_[index].get(), context, stream, call_cq,
                               notification_cq, tag);
   }
