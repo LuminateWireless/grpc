@@ -45,7 +45,7 @@
 #include <grpc++/impl/codegen/time.h>
 #include <grpc/impl/codegen/compression_types.h>
 
-#include <grpc/impl/codegen/log.h>
+//#include <grpc/impl/codegen/log.h>
 
 struct grpc_metadata;
 struct grpc_call;
@@ -185,8 +185,9 @@ class ServerContext {
 #ifndef NO_GRPC_BINARYLOG
   // Get the request id from metadata.
   const grpc::string get_request_id() {
-    if (client_metadata_.find("rid") != client_metadata_.end()) {
-      return grpc::string(client_metadata_.find("rid")->second.data());
+    if (client_metadata().find("rid") != client_metadata().end()) {
+      return grpc::string(client_metadata().find("rid")->second.data(), 
+                          client_metadata().find("rid")->second.length());
     } else {
       return "DefaultRid";
     }

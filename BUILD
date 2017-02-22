@@ -116,11 +116,6 @@ grpc_cc_library(
 
 grpc_cc_library(
     name = "grpc++",
-    defines = select({
-        "//tools/cpp:x86_32": ["NO_GRPC_BINARYLOG",],
-        "//tools/cpp:arm": ["NO_GRPC_BINARYLOG",],
-        "//conditions:default": [],
-     }),
     srcs = [
         "src/cpp/client/insecure_credentials.cc",
         "src/cpp/client/secure_credentials.cc",
@@ -146,12 +141,7 @@ grpc_cc_library(
         "grpc++_codegen_base",
         "grpc++_codegen_base_src",
         "grpc++_codegen_proto",
-    ] + 
-    select ({
-        "//tools/cpp:x86_32": [],
-        "//tools/cpp:arm": [],
-        "//conditions:default": ["//logs:grpc-log",],
-    }),
+    ]
 )
 
 grpc_cc_library(
@@ -176,7 +166,7 @@ grpc_cc_library(
     name = "grpc_plugin_support",
     srcs = [
         "src/compiler/cpp_generator.cc",
-        "src/compiler/csharp_generator.cc",
+        #"src/compiler/csharp_generator.cc",
         "src/compiler/node_generator.cc",
         "src/compiler/objective_c_generator.cc",
         "src/compiler/php_generator.cc",
@@ -1125,6 +1115,11 @@ grpc_cc_library(
 
 grpc_cc_library(
     name = "grpc++_base",
+    defines = select({
+        "@main//tools/cpp:x86_32": ["NO_GRPC_BINARYLOG",],
+        "@main//tools/cpp:arm": ["NO_GRPC_BINARYLOG",],
+        "//conditions:default": [],
+     }),
     srcs = [
         "src/cpp/client/channel_cc.cc",
         "src/cpp/client/client_context.cc",
@@ -1211,7 +1206,12 @@ grpc_cc_library(
     deps = [
         "grpc",
         "grpc++_codegen_base",
-    ],
+    ]  + 
+    select ({
+        "@main//tools/cpp:x86_32": [],
+        "@main//tools/cpp:arm": [],
+        "//conditions:default": ["//external:grpc-log",],
+    }),
 )
 
 grpc_cc_library(

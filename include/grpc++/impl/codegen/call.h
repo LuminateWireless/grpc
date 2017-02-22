@@ -341,8 +341,6 @@ class CallOpRecvMessage {
 #ifndef NO_GRPC_BINARYLOG
         logs::GrpcLog::Log(grpc_message_.get(), recv_buf_);
 #endif
-        *status = SerializationTraits<R>::Deserialize(recv_buf_, message_,
-                                                      max_message_size).ok();
       } else {
         got_message = false;
         g_core_codegen_interface->grpc_byte_buffer_destroy(recv_buf_);

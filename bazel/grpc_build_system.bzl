@@ -33,13 +33,14 @@
 # use to generate other platform's build system files.
 #
 
-def grpc_cc_library(name, srcs = [], public_hdrs = [], hdrs = [], external_deps = [], deps = [], standalone = False, language = "C++"):
+def grpc_cc_library(name, srcs = [], defines = [], public_hdrs = [], hdrs = [], external_deps = [], deps = [], standalone = False, language = "C++"):
   copts = []
   if language.upper() == "C":
     copts = ["-std=c99"]
   native.cc_library(
     name = name,
     srcs = srcs,
+    defines = defines,
     hdrs = hdrs + public_hdrs,
     deps = deps + ["//external:" + dep for dep in external_deps],
     copts = copts,
